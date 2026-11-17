@@ -1,0 +1,27 @@
+{
+  "preferred_browser": "brave",
+  "facts": [
+    "my name is sagnik poddar",
+    "i love to play football",
+    "Sagnik Poddar enjoys the character of Ironman",
+    "Sagnik Poddar is in Class 12 preparing for IITB CSE",
+    "Sagnik Poddar's JEE Mains exam is on 22nd January",
+    "Sagnik Poddar enjoys eating briyani"
+  ],
+  "last_active_browser": "brave",
+  "session_history": [
+    "User: This is Jarvis, gonna play this open, Brave for me -> Jarvis: launch_app({'app_name': 'brave'})",
+    "User: open Brave -> Jarvis: launch_app({'app_name': 'brave'})",
+    "User: Open Cloud -> Jarvis: launch_app({'app_name': 'cloud'})",
+    "User: Open, Lord -> Jarvis: launch_app({'app_name': 'brave'})",
+    "User: Open Cloud, CLAUDEE -> Jarvis: launch_app({'app_name': 'cloud'})",
+    "User: I said open, C-L-A-U-D-E -> Jarvis: launch_app({'app_name': 'brave'})",
+    "User: Yes, now open cloud -> Jarvis: launch_app({'app_name': 'cloud'})",
+    "User: Play the video -> Jarvis: press_shortcut({'keys': 'media_play_pause'})",
+    "User: Close the video -> Jarvis: close_app({'app_name': 'the'})",
+    "User: Close the video -> Jarvis: close_app({'app_name': 'the'})",
+    "User: I'll say it -> Jarvis: launch_app({'app_name': 'brave'})",
+    "User: Because the video was -> Jarvis: launch_app({'app_name': 'brave'})"
+  ],
+  "last_active_site": "amazon"
+}
