@@ -49,7 +49,8 @@ BLOCK_SIZE = int(SAMPLE_RATE * BLOCK_DURATION)
 
 INDIAN_ACCENT_PROMPT = (
     "Jarvis, Brave, Chrome, Edge, Notepad, Calculator, VS Code, YouTube, Amazon, Flipkart, Myntra, "
-    "kurta, Physics Wallah, PW, JEE, ESP32."
+    "kurta, Physics Wallah, PW, JEE, ESP32, AQI, air quality index, Delhi, New Delhi, Kolkata, Mumbai, "
+    "Bengaluru, Chennai, Hyderabad, weather, temperature, time, date, squared, plus, minus, integral."
 )
 
 WAKE_WORD_PATTERNS = [
@@ -82,6 +83,7 @@ LOADING_PHRASES = {
 
 # Pre-cached instant reflex replies so 0.0s commands speak in 0.005s with zero internet delay!
 INSTANT_REFLEX_PHRASES = [
+    "DONE,",
     "Opening brave, sir.",
     "Opening notepad, sir.",
     "Opening calculator, sir.",
@@ -115,7 +117,8 @@ def is_zero_latency_reflex_query(q: str) -> bool:
         return True
     if any(p in ql for p in [
         "previous tab", "next tab", "close tab", "close this", "delete this", "clear all",
-        "pause", "play", "go back", "refresh", "status report", "undo", "confirm", "cancel"
+        "pause", "play", "go back", "refresh", "status report", "undo", "confirm", "cancel",
+        "add to cart", "buy now", "what time", "time is it", "what is the time", "today's date"
     ]):
         return True
     return False
@@ -1158,8 +1161,8 @@ class JarvisVoicePlugin:
                                     sys.stdout.flush()
                                     transcript = self._transcribe_clip(full_audio, is_barge_in=in_barge_in_capture)
                                     stt_ms = (time.perf_counter() - t0) * 1000.0
-                                    # Drain any mic noise accumulated during Whisper CPU decode so bursts never stack!
-                                    self._flush_audio_queue()
+                                    if not in_barge_in_capture:
+                                        self._flush_audio_queue()
 
                                     if transcript and len(transcript) >= 2:
                                         self._handle_verified_speech(

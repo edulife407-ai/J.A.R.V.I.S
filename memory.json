@@ -8,20 +8,20 @@
     "Sagnik Poddar's JEE Mains exam is on 22nd January",
     "Sagnik Poddar enjoys eating briyani"
   ],
-  "last_active_browser": "brave",
+  "last_active_browser": "chrome",
   "session_history": [
-    "User: This is Jarvis, gonna play this open, Brave for me -> Jarvis: launch_app({'app_name': 'brave'})",
-    "User: open Brave -> Jarvis: launch_app({'app_name': 'brave'})",
-    "User: Open Cloud -> Jarvis: launch_app({'app_name': 'cloud'})",
-    "User: Open, Lord -> Jarvis: launch_app({'app_name': 'brave'})",
-    "User: Open Cloud, CLAUDEE -> Jarvis: launch_app({'app_name': 'cloud'})",
-    "User: I said open, C-L-A-U-D-E -> Jarvis: launch_app({'app_name': 'brave'})",
-    "User: Yes, now open cloud -> Jarvis: launch_app({'app_name': 'cloud'})",
-    "User: Play the video -> Jarvis: press_shortcut({'keys': 'media_play_pause'})",
-    "User: Close the video -> Jarvis: close_app({'app_name': 'the'})",
-    "User: Close the video -> Jarvis: close_app({'app_name': 'the'})",
-    "User: I'll say it -> Jarvis: launch_app({'app_name': 'brave'})",
-    "User: Because the video was -> Jarvis: launch_app({'app_name': 'brave'})"
+    "User: Edge of this -> Jarvis: browser_nav({'action': 'prev_tab'})",
+    "User: close Brave -> Jarvis: close_app({'app_name': 'brave'})",
+    "User: tell me the time -> Jarvis: respond({'message': \"It's 1:32 PM, sir.\"})",
+    "User: And what is the AQI of Delhi right now -> Jarvis: respond({'message': 'Current AQI of Delhi is 120.'})",
+    "User: Are you sure about that -> Jarvis: respond({'message': 'Sure about what?'})",
+    "User: I'm telling that Arekshoi about the AQI of Delhi -> Jarvis: respond({'message': 'Current AQI of Delhi is 120.'})",
+    "User: So that are you sure about the AQI of Delhi -> Jarvis: respond({'message': 'Current AQI of Delhi is 120.'})",
+    "User: Edge, Jarvis, can you please answer? Well, it is 2 plus 2 -> Jarvis: respond({'message': '2+2 equals 4.'})",
+    "User: Didn't want you to check the screen, I asked you what is 2 plus 2 -> Jarvis: respond({'message': '2+2 equals 4.'})",
+    "User: And Kenepris also tell me what is the derivative of 10XDF -> Jarvis: respond({'message': 'Derivative is 10D.'})",
+    "User: I asked that what is the derivative of -> Jarvis: respond({'message': 'Derivative depends on function.'})",
+    "User: 10x, not 10x, it will be 10x -> Jarvis: respond({'message': '10x is 10x.'})"
   ],
-  "last_active_site": "amazon"
+  "last_active_site": "youtube"
 }

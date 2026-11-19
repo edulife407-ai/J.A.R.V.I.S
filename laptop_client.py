@@ -9,10 +9,11 @@ import io
 import json
 import threading
 import itertools
-import requests
 import keyboard
 import tkinter as tk
 from tkinter import simpledialog
+from contracts import ObservationPayload
+from brain_adapter import DualHybridBrain, normalize_spoken_goal
 from skills import execute_skill, pop_due_schedules, ensure_aux_files
 
 try:
@@ -35,6 +36,9 @@ AGENT_EXEC_LOCK = threading.Lock()
 TURN_CANCEL_EVENT = threading.Event()
 ACTIVE_TURN_ID = 0
 VOICE_TURN_COUNTER = 1
+
+# Direct in-memory Brain (Zero localhost:8000 HTTP lag or 1.5s cooldown!)
+JARVIS_BRAIN = DualHybridBrain(default_mode="CLOUD")
 
 
 def cancel_active_turn():
@@ -64,8 +68,6 @@ def try_attach_voice_module(handle_voice_cb):
     return None
 
 
-SERVER_URL = "http://127.0.0.1:8000/api/v1/step"
-
 PRIMARY_INTERACTIVE_TYPES = {
     "EditControl", "ButtonControl", "HyperlinkControl",
     "CheckBoxControl", "ComboBoxControl", "RadioButtonControl",
@@ -76,7 +78,7 @@ PRIMARY_INTERACTIVE_TYPES = {
 def loading_animation(stop_event: threading.Event):
     messages = [
         "Optic Nerve locking target...",
-        "Qwen Brain computing...",
+        "Neural Core computing...",
     ]
     spinner = itertools.cycle(["|", "/", "-", "\\"])
     i = 0
@@ -156,7 +158,12 @@ def restore_window_focus(hwnd: int):
 
 
 def is_instant_os_command(goal: str) -> bool:
-    gl = re.sub(r"^(?:please\s+|jarvis\s+|hey\s+jarvis\s+|can\s+you\s+)+", "", (goal or "").strip().lower()).strip(" .?!,;:")
+    gl = normalize_spoken_goal(goal).lower()
+    if any(p in gl for p in ["what time", "what is the time", "current time", "today's date", "switch to", "go back to"]):
+        return True
+    # Text-only factual/math/live-web questions do not need a 450ms UIA DOM scan or screenshot
+    if any(p in gl for p in ["aqi", "air quality", "weather", "temperature", "squared", "integral", "derivative", "who is", "what is", "what's", "explain"]) and not any(s in gl for s in ["screen", "this page", "written", "summarize"]):
+        return True
     if gl in [
         "close this one", "close this", "close tab", "close this tab",
         "delete this", "delete this one", "delete tab", "delete this tab",
@@ -281,7 +288,7 @@ def scan_screen_ui(screen_w: int, screen_h: int, fast_skip: bool = False) -> tup
 
 def run_agent(user_goal: str, session_id: str, target_hwnd: int = 0) -> tuple[str, str, bool]:
     """
-    Executes a turn with mid-flight cancellation checks (`TURN_CANCEL_EVENT`).
+    Executes a turn directly in memory with mid-flight cancellation checks (`TURN_CANCEL_EVENT`).
     Returns `(last_status, spoken_reply, was_cancelled)`.
     """
     global ACTIVE_TURN_ID
@@ -296,7 +303,7 @@ def run_agent(user_goal: str, session_id: str, target_hwnd: int = 0) -> tuple[st
         print(f"\n=== JARVIS EXECUTING: '{user_goal}' ===")
         current_goal_context = user_goal
         last_status = "Ready."
-        spoken_reply = "Done, sir."
+        spoken_reply = ""
 
         for step in range(1, 4):
             if TURN_CANCEL_EVENT.is_set() or my_turn_id != ACTIVE_TURN_ID:
@@ -318,17 +325,17 @@ def run_agent(user_goal: str, session_id: str, target_hwnd: int = 0) -> tuple[st
                 mode_lbl = "0.0s Fast-Path" if fast_skip else f"{len(ui_elements) - 1} DOM elements + Live Screenshot"
                 print(f'[Active Window] "{active_window}" ({mode_lbl})')
 
-            payload = {
-                "session_id": f"{session_id}_s{step}",
-                "device_type": "LAPTOP",
-                "screen_width": screen_w,
-                "screen_height": screen_h,
-                "user_goal": current_goal_context,
-                "step_number": step,
-                "screenshot_base64": screenshot_b64 or f'ACTIVE_WINDOW: "{active_window}"',
-                "ui_elements": ui_elements,
-                "kill_switch_triggered": False,
-            }
+            obs_payload = ObservationPayload(
+                session_id=f"{session_id}_s{step}",
+                device_type="LAPTOP",
+                screen_width=screen_w,
+                screen_height=screen_h,
+                user_goal=current_goal_context,
+                step_number=step,
+                screenshot_base64=screenshot_b64 or f'ACTIVE_WINDOW: "{active_window}"',
+                ui_elements=ui_elements,
+                kill_switch_triggered=False,
+            )
 
             try:
                 stop_event = threading.Event()
@@ -337,37 +344,30 @@ def run_agent(user_goal: str, session_id: str, target_hwnd: int = 0) -> tuple[st
                 loader_thread.start()
 
                 try:
-                    res = requests.post(SERVER_URL, json=payload, timeout=45)
+                    decision = JARVIS_BRAIN.decide(obs_payload, JARVIS_BRAIN.session_history[-5:])
                 finally:
                     stop_event.set()
                     loader_thread.join()
 
-                # Check if user said "Wait!" or barged in while the server was thinking!
+                # Check if user said "Wait!" or barged in while the brain was thinking!
                 if TURN_CANCEL_EVENT.is_set() or my_turn_id != ACTIVE_TURN_ID:
                     print("🛑 [Turn Aborted Before Action — Discarding Stale Brain Response]")
                     return "Cancelled.", "", True
-
-                if res.status_code != 200:
-                    print(f"[Harness HTTP {res.status_code}] {res.text}")
-                    last_status = f"HTTP Error {res.status_code}"
-                    spoken_reply = "I encountered a server error, sir."
-                    break
-                response = res.json()
             except Exception as e:
-                print(f"[Harness Network Error] {e}")
-                last_status = "Network/Timeout Error."
-                spoken_reply = "My connection to the neural server timed out, sir."
+                print(f"[Brain Execution Error] {e}")
+                last_status = "Brain Error."
+                spoken_reply = "I encountered an error, sir."
                 break
 
-            thought_str = response.get("thought", "")
-            speak_str = response.get("speak_out_loud", "")
+            thought_str = decision.thought or ""
+            speak_str = decision.speak_out_loud or ""
             print(f"Step {step} Thought: {thought_str}")
+            spoken_reply = speak_str
             if speak_str:
                 print(f'  [Jarvis Voice] "{speak_str}"')
                 last_status = speak_str
-                spoken_reply = speak_str
 
-            text_to_type = str(response.get("text_to_type") or "").strip()
+            text_to_type = str(decision.text_to_type or "").strip()
             tool_outputs = []
             needs_followup_step = False
 

@@ -9,6 +9,7 @@ import ctypes
 import urllib.parse
 import requests
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import List
 from dotenv import load_dotenv
 from contracts import ObservationPayload, BrainDecision
@@ -98,6 +99,8 @@ def normalize_spoken_goal(raw_goal: str) -> str:
         (r"\bmen's\s+kutta\b", "men's kurtas"),
         (r"\bman's\s+kurtas\b", "men's kurtas"),
         (r"\bcurtas\b", "kurtas"),
+        (r"\b(?:a\s*q\s*i|a\s*k\s*i|e\s*q\s*i|hey\s*q\s*i|acute\s*eye)\b", "AQI"),
+        (r"\b(?:d\s+e\s+l\s+h\s+i|dalli|dilli|deli)\b", "Delhi"),
     ]
     for pat, repl in phonetic_fixes:
         g = re.sub(pat, repl, g, flags=re.I)
@@ -174,6 +177,36 @@ def _get_all_open_os_windows() -> list[str]:
     return titles[:12]
 
 
+def _fetch_live_web_snippets(query: str) -> str:
+    """Fetches live web snippets in the background (0.4s) for AQI, weather, news, or factual queries."""
+    q_low = (query or "").lower()
+    live_triggers = [
+        "aqi", "air quality", "weather", "temperature", "price", "stock", "score",
+        "news", "latest", "current", "today", "who is", "what is the", "capital", "population"
+    ]
+    if not any(t in q_low for t in live_triggers):
+        return ""
+    # Skip if it's pure math
+    if any(m in q_low for m in ["squared", "plus", "minus", "integral", "derivative", "sin(", "cos("]):
+        return ""
+    try:
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        res = requests.get(url, headers=headers, timeout=2.5)
+        if res.status_code == 200:
+            snippets = re.findall(r'class="result__snippet[^>]*>(.*?)</a>', res.text, flags=re.S)
+            clean_snips = []
+            for s in snippets[:3]:
+                txt = re.sub(r"<[^>]+>", "", s).strip()
+                if txt:
+                    clean_snips.append(txt)
+            if clean_snips:
+                return " | ".join(clean_snips)[:900]
+    except Exception:
+        pass
+    return ""
+
+
 class BaseBrainProvider(ABC):
     @abstractmethod
     def decide(self, observation: ObservationPayload, history: List[str]) -> BrainDecision:
@@ -181,9 +214,9 @@ class BaseBrainProvider(ABC):
 
 
 class DualHybridBrain(BaseBrainProvider):
-    def __init__(self, gemini_api_key: str | None = None, default_mode: str = "LOCAL"):
+    def __init__(self, gemini_api_key: str | None = None, default_mode: str = "CLOUD"):
         load_dotenv(dotenv_path=ENV_PATH, override=True)
-        self.mode = os.getenv("JARVIS_BRAIN_MODE", "LOCAL").upper().strip()
+        self.mode = os.getenv("JARVIS_BRAIN_MODE", default_mode).upper().strip()
         self.gemini_api_key = (gemini_api_key or os.getenv("GEMINI_API_KEY") or "").strip()
         self.ollama_base = "http://127.0.0.1:11434"
         self.local_model = self._detect_local_model()
@@ -342,7 +375,7 @@ Return ONLY valid JSON:
 
         gen_cfg = {"temperature": 0.0, "responseMimeType": "application/json"}
 
-        for model_name in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+        for model_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.gemini_api_key}"
             payload = {
                 "contents": [{
@@ -397,13 +430,22 @@ Return ONLY valid JSON:
         if "[system_screen_data]" in gl or " and " in gl or " then " in gl:
             return None
 
+        # 0.0s INSTANT TIME & DATE REFLEX (Never wakes up LLM just to check the clock!)
+        if re.search(r"\b(?:what\s+time\s+is\s+it|what\s+is\s+the\s+time|what's\s+the\s+time|current\s+time|tell\s+me\s+the\s+time)\b", gl):
+            now_t = datetime.now().strftime("%I:%M %p").lstrip("0")
+            return [{"thought": "Checking system clock.", "skill": "respond", "args": {"message": f"It's {now_t}, sir."}, "speak": f"It's {now_t}, sir."}]
+
+        if re.search(r"\b(?:what\s+is\s+today's\s+date|what's\s+the\s+date|what\s+day\s+is\s+it|today's\s+date)\b", gl):
+            now_d = datetime.now().strftime("%A, %d %B %Y")
+            return [{"thought": "Checking system calendar.", "skill": "respond", "args": {"message": f"Today is {now_d}, sir."}, "speak": f"Today is {now_d}, sir."}]
+
         # 0.0s CONFIRMATION GATE, SELF-CANCEL, UNDO, STATUS REPORT & BRIEFING
         if gl in ["confirm", "yes", "yes proceed", "proceed", "do it", "approved"]:
-            return [{"thought": "Confirming pending action.", "skill": "confirm_action", "args": {}, "speak": "Proceeding, sir."}]
+            return [{"thought": "Confirming pending action.", "skill": "confirm_action", "args": {}, "speak": "Done."}]
         if gl in ["cancel", "abort", "no", "stop action", "nevermind", "forget it"]:
-            return [{"thought": "Cancelling action.", "skill": "cancel_action", "args": {}, "speak": "Aborted, sir. Standing by."}]
+            return [{"thought": "Cancelling action.", "skill": "cancel_action", "args": {}, "speak": ""}]
         if gl in ["undo", "undo that", "undo last action", "reverse that"]:
-            return [{"thought": "Reversing last action.", "skill": "undo_action", "args": {}, "speak": "Reversing your last action, sir."}]
+            return [{"thought": "Reversing last action.", "skill": "undo_action", "args": {}, "speak": "Done."}]
 
         # 0.0s ADD TO CART / BUY NOW
         if re.search(r"\b(?:add\s+(?:this\s+|that\s+|the\s+|.*?\s+)?to\s+(?:my\s+)?(?:cart|bag)|buy\s+now|buy\s+this\s+now)\b", gl):
@@ -412,7 +454,7 @@ Return ONLY valid JSON:
                 "thought": "Hunting and clicking Add to Cart button.",
                 "skill": "add_to_cart",
                 "args": {"buy_now": is_buy},
-                "speak": "Adding to cart, sir."
+                "speak": "Done."
             }]
 
         if any(p in gl for p in ["status report", "system status", "system health", "battery status", "hardware status", "diagnostics"]):
@@ -426,7 +468,7 @@ Return ONLY valid JSON:
             return [{"thought": "Clearing workspace.", "skill": "clear_workspace", "args": {}, "speak": "Confirming workspace wipe, sir."}]
 
         if any(p in gl for p in ["pin this", "pin page", "add to workspace", "scan to workspace", "save to workspace"]):
-            return [{"thought": "Pinning screen.", "skill": "scan_to_workspace", "args": {}, "speak": "Pinning page to workspace, sir."}]
+            return [{"thought": "Pinning screen.", "skill": "scan_to_workspace", "args": {}, "speak": "Done."}]
 
         if any(phrase in gl for phrase in ["summarize what", "summarize this", "read this page", "what is written"]):
             return [{"thought": "Extracting screen text.", "skill": "read_screen_text", "args": {}, "speak": "Scanning screen text, sir."}]
@@ -444,13 +486,13 @@ Return ONLY valid JSON:
                 amt = 4
 
             if "top" in gl:
-                return [{"thought": "Scrolling top.", "skill": "scroll_page", "args": {"direction": "top"}, "speak": "Top of the page, sir."}]
+                return [{"thought": "Scrolling top.", "skill": "scroll_page", "args": {"direction": "top"}, "speak": "Done."}]
             elif "bottom" in gl:
-                return [{"thought": "Scrolling bottom.", "skill": "scroll_page", "args": {"direction": "bottom"}, "speak": "Bottom of the page."}]
+                return [{"thought": "Scrolling bottom.", "skill": "scroll_page", "args": {"direction": "bottom"}, "speak": "Done."}]
             elif "up" in gl:
-                return [{"thought": "Scrolling up.", "skill": "scroll_page", "args": {"direction": "up", "amount": amt}, "speak": "Scrolling up."}]
+                return [{"thought": "Scrolling up.", "skill": "scroll_page", "args": {"direction": "up", "amount": amt}, "speak": "Done."}]
             else:
-                return [{"thought": "Scrolling down.", "skill": "scroll_page", "args": {"direction": "down", "amount": amt}, "speak": "Scrolling down."}]
+                return [{"thought": "Scrolling down.", "skill": "scroll_page", "args": {"direction": "down", "amount": amt}, "speak": "Done."}]
 
         # 3. 0.0s TAB CLOSING
         is_close_verb = any(v in gl for v in ["close", "clear", "delete", "remove", "kill"])
@@ -464,7 +506,7 @@ Return ONLY valid JSON:
                 "thought": f"Closing other '{target_site or 'all'}' tabs.",
                 "skill": "browser_nav",
                 "args": {"action": "close_other_tabs", "target": target_site},
-                "speak": "Clearing other tabs, sir."
+                "speak": "Done."
             }]
 
         if gl in [
@@ -472,41 +514,41 @@ Return ONLY valid JSON:
             "delete this", "delete this one", "delete tab", "delete this tab",
             "clear this", "clear this tab", "clear tab", "remove this tab"
         ]:
-            return [{"thought": "Closing current tab.", "skill": "browser_nav", "args": {"action": "close_tab", "count": 1}, "speak": "Closing tab, sir."}]
+            return [{"thought": "Closing current tab.", "skill": "browser_nav", "args": {"action": "close_tab", "count": 1}, "speak": "Done."}]
 
         # 4. 0.0s SYSTEM-WIDE MEDIA CONTROLS
         if gl in [
             "pause", "play", "pause video", "pause the video", "pause the video that is playing",
             "play video", "play the video", "stop video", "stop the video", "pause audio", "resume video"
         ]:
-            return [{"thought": "Toggling system media.", "skill": "press_shortcut", "args": {"keys": "media_play_pause"}, "speak": "Toggling media, sir."}]
+            return [{"thought": "Toggling system media.", "skill": "press_shortcut", "args": {"keys": "media_play_pause"}, "speak": "Done."}]
 
         # 5. 0.0s BROWSER & TAB SWITCHING
         if any(p in gl for p in [
             "previous tab", "prev tab", "go to the previous tab", "go to previous tab",
             "switch to the previous tab", "switch to previous tab", "go back a tab", "last tab"
         ]):
-            return [{"thought": "Switching to previous tab.", "skill": "browser_nav", "args": {"action": "prev_tab"}, "speak": "Previous tab, sir."}]
+            return [{"thought": "Switching to previous tab.", "skill": "browser_nav", "args": {"action": "prev_tab"}, "speak": "Done."}]
 
         if any(p in gl for p in [
             "next tab", "change tab", "go to the next tab", "go to next tab",
             "switch to the next tab", "switch to next tab"
         ]):
-            return [{"thought": "Switching to next tab.", "skill": "browser_nav", "args": {"action": "next_tab"}, "speak": "Next tab, sir."}]
+            return [{"thought": "Switching to next tab.", "skill": "browser_nav", "args": {"action": "next_tab"}, "speak": "Done."}]
 
         switch_match = re.match(r"^(?:go\s+back\s+to|return\s+to|switch\s+to|back\s+to|go\s+to)\s+(.+?)(?:\s+tab|\s+window)?$", gl)
         if switch_match:
             target_name = switch_match.group(1).strip(" .?!,;:")
             target_name = re.sub(r"^(?:the|my)\s+", "", target_name).strip()
             if target_name in KNOWN_SITE_URLS:
-                return [{"thought": f"Switching to {target_name}.", "skill": "browser_nav", "args": {"action": "switch_tab", "target": target_name}, "speak": f"Switching to {target_name}, sir."}]
+                return [{"thought": f"Switching to {target_name}.", "skill": "browser_nav", "args": {"action": "switch_tab", "target": target_name}, "speak": "Done."}]
 
         if gl in ["go back", "back", "navigate back", "previous page"]:
-            return [{"thought": "Navigating back.", "skill": "browser_nav", "args": {"action": "back"}, "speak": "Going back."}]
+            return [{"thought": "Navigating back.", "skill": "browser_nav", "args": {"action": "back"}, "speak": "Done."}]
         if gl in ["go forward", "forward", "next page"]:
-            return [{"thought": "Navigating forward.", "skill": "browser_nav", "args": {"action": "forward"}, "speak": "Going forward."}]
+            return [{"thought": "Navigating forward.", "skill": "browser_nav", "args": {"action": "forward"}, "speak": "Done."}]
         if gl in ["refresh", "reload", "refresh page", "reload page"]:
-            return [{"thought": "Refreshing page.", "skill": "browser_nav", "args": {"action": "refresh"}, "speak": "Refreshing."}]
+            return [{"thought": "Refreshing page.", "skill": "browser_nav", "args": {"action": "refresh"}, "speak": "Done."}]
 
         browser = ""
         for b in ["brave", "edge", "chrome", "firefox"]:
@@ -523,30 +565,34 @@ Return ONLY valid JSON:
 
             # Check if any known site or known app is named inside raw_target
             matched_site = next((s for s in KNOWN_SITE_URLS if re.search(rf"\b{re.escape(s)}\b", raw_target)), None)
-            matched_app = next(( KNOWN_APP_KEYWORDS[k] for k in KNOWN_APP_KEYWORDS if re.search(rf"\b{re.escape(k)}\b", raw_target)), None)
+            matched_app = next((KNOWN_APP_KEYWORDS[k] for k in KNOWN_APP_KEYWORDS if re.search(rf"\b{re.escape(k)}\b", raw_target)), None)
             has_real_domain = bool(re.search(r"\.[a-z]{2,4}$", raw_target))
 
             if matched_site:
                 url = KNOWN_SITE_URLS[matched_site]
                 self.last_active_site = matched_site
                 update_memory_state(last_site=matched_site)
-                return [{"thought": f"Opening {matched_site}.", "skill": "open_website", "args": {"url": url, "browser": browser}, "speak": f"Opening {matched_site}, sir."}]
+                return [{"thought": f"Opening {matched_site}.", "skill": "open_website", "args": {"url": url, "browser": browser}, "speak": "Done."}]
             elif has_real_domain:
-                return [{"thought": f"Opening {raw_target}.", "skill": "open_website", "args": {"url": raw_target, "browser": browser}, "speak": f"Opening {raw_target}, sir."}]
+                return [{"thought": f"Opening {raw_target}.", "skill": "open_website", "args": {"url": raw_target, "browser": browser}, "speak": "Done."}]
             elif matched_app:
-                return [{"thought": f"Launching '{matched_app}'.", "skill": "launch_app", "args": {"app_name": matched_app}, "speak": f"Opening {matched_app}, sir."}]
+                return [{"thought": f"Launching '{matched_app}'.", "skill": "launch_app", "args": {"app_name": matched_app}, "speak": "Done."}]
             elif len(raw_target.split()) <= 2:
-                return [{"thought": f"Launching '{raw_target}'.", "skill": "launch_app", "args": {"app_name": raw_target}, "speak": f"Opening {raw_target}, sir."}]
+                return [{"thought": f"Launching '{raw_target}'.", "skill": "launch_app", "args": {"app_name": raw_target}, "speak": "Done."}]
 
         # 7. 0.0s INSTANT APP CLOSING (Matches known app names cleanly)
         close_match = re.search(r"\b(?:close|quit|exit|kill)\s+([a-z0-9\s]+)$", gl)
         if close_match and "tab" not in gl and "one" not in gl and "this" not in gl:
             raw_app = close_match.group(1).strip(" .?!,;:")
             matched_app = next((KNOWN_APP_KEYWORDS[k] for k in KNOWN_APP_KEYWORDS if re.search(rf"\b{re.escape(k)}\b", raw_app)), raw_app.split()[0])
-            return [{"thought": f"Closing {matched_app}.", "skill": "close_app", "args": {"app_name": matched_app}, "speak": f"Closing {matched_app}, sir."}]
+            return [{"thought": f"Closing {matched_app}.", "skill": "close_app", "args": {"app_name": matched_app}, "speak": "Done."}]
 
-        # 8. 0.0s INSTANT CONTEXT-AWARE SEARCH ROUTING
-        search_match = re.search(r"\b(?:search\s+for|search|find|look\s+for|shop\s+for)\s+(.+)$", g, flags=re.I)
+        # 8. 0.0s INSTANT CONTEXT-AWARE SEARCH ROUTING (Guarded so math/factual questions go to the Brain!)
+        is_factual_question = any(w in gl for w in [
+            "what is", "what's", "who is", "how to", "why ", "explain", "solve",
+            "squared", "plus", "minus", "integral", "derivative", "aqi", "weather", "temperature"
+        ])
+        search_match = None if is_factual_question else re.search(r"\b(?:search\s+for|search|find|look\s+for|shop\s+for)\s+(.+)$", g, flags=re.I)
         if search_match:
             raw_q = search_match.group(1).strip(" .?!,;:")
             q = re.sub(r"\b(?:on|in|from|at|using|with)\s+(?:google|youtube|amazon|flipkart|myntra|the\s+web|web|internet|edge|brave|chrome|firefox)\b", "", raw_q, flags=re.I).strip(" .?!,;:")
@@ -562,27 +608,27 @@ Return ONLY valid JSON:
             on_fk = explicit_fk or (not explicit_yt and not explicit_amz and not explicit_web and ("flipkart" in active_lower or self.last_active_site == "flipkart"))
 
             if on_yt:
-                return [{"thought": f"Searching YouTube for '{q}'.", "skill": "youtube_search", "args": {"query": q, "browser": browser}, "speak": f"Searching YouTube for {q}, sir."}]
+                return [{"thought": f"Searching YouTube for '{q}'.", "skill": "youtube_search", "args": {"query": q, "browser": browser}, "speak": "Done."}]
             elif on_amz:
                 url = f"https://www.amazon.in/s?k={urllib.parse.quote_plus(q)}"
                 self.last_active_site = "amazon"
                 update_memory_state(last_site="amazon")
                 if "amazon" in active_lower and not browser:
-                    return [{"thought": f"Searching Amazon in-page for '{q}'.", "skill": "fill_input", "args": {"target": "search", "text": q, "press_enter": True}, "speak": f"Searching Amazon for {q}, sir."}]
-                return [{"thought": f"Searching Amazon for '{q}'.", "skill": "open_website", "args": {"url": url, "browser": browser}, "speak": f"Searching Amazon for {q}, sir."}]
+                    return [{"thought": f"Searching Amazon in-page for '{q}'.", "skill": "fill_input", "args": {"target": "search", "text": q, "press_enter": True}, "speak": "Done."}]
+                return [{"thought": f"Searching Amazon for '{q}'.", "skill": "open_website", "args": {"url": url, "browser": browser}, "speak": "Done."}]
             elif on_fk:
                 url = f"https://www.flipkart.com/search?q={urllib.parse.quote_plus(q)}"
                 self.last_active_site = "flipkart"
                 update_memory_state(last_site="flipkart")
-                return [{"thought": f"Searching Flipkart for '{q}'.", "skill": "open_website", "args": {"url": url, "browser": browser}, "speak": f"Searching Flipkart for {q}, sir."}]
+                return [{"thought": f"Searching Flipkart for '{q}'.", "skill": "open_website", "args": {"url": url, "browser": browser}, "speak": "Done."}]
             else:
-                return [{"thought": f"Searching Google for '{q}'.", "skill": "google_search", "args": {"query": q, "browser": browser}, "speak": f"Searching Google for {q}, sir."}]
+                return [{"thought": f"Searching Google for '{q}'.", "skill": "google_search", "args": {"query": q, "browser": browser}, "speak": "Done."}]
 
         # 9. 0.0s WAIT, MEMORY & SCHEDULES
         if gl.startswith("wait"):
             nums = re.findall(r"\d+", gl)
             secs = int(nums[0]) if nums else 2
-            return [{"thought": "Waiting.", "skill": "wait", "args": {"seconds": secs}, "speak": f"Waiting {secs} seconds."}]
+            return [{"thought": "Waiting.", "skill": "wait", "args": {"seconds": secs}, "speak": "Done."}]
 
         mem_match = re.match(
             r"^(?:remember\s+that|remember|save\s+to\s+memory\s+that|save\s+to\s+memory|save\s+in\s+memory|save\s+memory|memorize\s+that|memorize|note\s+that)\s*[:,-]?\s*(.+)$",
@@ -605,10 +651,11 @@ Return ONLY valid JSON:
 
         return None
 
-    def _build_prompt(self, observation: ObservationPayload, history: List[str] | None = None, optic_info: dict | None = None) -> str:
+    def _build_prompt(self, observation: ObservationPayload, history: List[str] | None = None, optic_info: dict | None = None, include_web_snippets: bool = False) -> str:
         active_win, ui_list, open_tabs = self._get_active_window_and_ui(observation)
         all_os_windows = ", ".join(_get_all_open_os_windows()) or active_win
         goal_text = normalize_spoken_goal(str(observation.user_goal or ""))
+        now_clock = datetime.now().strftime("%A, %d %B %Y | %I:%M %p")
 
         if "[SYSTEM_SCREEN_DATA]" in goal_text:
             return f"""You are JARVIS. The screen text has ALREADY been extracted and saved to the workspace below.
@@ -631,7 +678,14 @@ Reply ONLY with this JSON array format:
         workspace_snippet = "Omitted during UI action." if is_ui_action else load_workspace()[-3000:]
         optic_block = f"\nOPTIC NERVE TELEMETRY:\n  {optic_info['report_text']}\n" if is_ui_action else ""
 
+        web_block = ""
+        if include_web_snippets and not is_ui_action:
+            snips = _fetch_live_web_snippets(goal_text)
+            if snips:
+                web_block = f"\nLIVE WEB SEARCH RESULTS:\n  {snips}\n"
+
         return f"""You are JARVIS, Tony Stark's hyper-competent, dryly sarcastic British AI agent.
+CURRENT SYSTEM TIME & DATE: {now_clock}
 
 STANDING INSTRUCTIONS: {instructions}
 USER MEMORY: {json.dumps({k: v for k, v in mem_data.items() if k != 'session_history'})}
@@ -641,7 +695,7 @@ RECENT SESSION HISTORY:
 FOREGROUND WINDOW: "{active_win}" (Active Site: "{self.last_active_site}")
 ALL RUNNING OS WINDOWS (System-Wide Awareness): {all_os_windows}
 OPEN BROWSER TABS: {open_tabs}
-{optic_block}
+{optic_block}{web_block}
 VISIBLE UI ELEMENTS:
   {ui_list}
 
@@ -651,6 +705,8 @@ WORKSPACE DATA:
 USER COMMAND: "{goal_text}"
 
 REASONING & DECISION RULES:
+0. MATH, SCIENCE, TIME & GENERAL KNOWLEDGE QUESTIONS:
+   - If the user asks a math question (e.g. "(a+b)^2"), science concept, time/date, live fact (e.g. AQI, weather, news), or general question, answer it directly in 1-2 clear spoken sentences using `"skill": "respond", "args": {{"message": "concise answer"}}, "speak": "concise spoken answer"`. NEVER call `google_search` for questions you can answer directly!
 1. HUMAN SELF-CORRECTION & INTENT:
    - If the user changed their mind mid-sentence ("close notepad, wait open brave instead"), execute ONLY their final intended action ("launch_app" -> "brave").
 2. TAB & WINDOW MANAGEMENT:
@@ -692,7 +748,7 @@ AVAILABLE SKILLS:
 
 Reply ONLY with a valid JSON ARRAY (keep "thought" under 5 words):
 [
-  {{"thought": "Reasoning", "skill": "skill_name", "args": {{}}, "speak": "Short witty remark"}}
+  {{"thought": "Reasoning", "skill": "skill_name", "args": {{}}, "speak": "Done."}}
 ]"""
 
     def _extract_json(self, raw_text: str) -> list:
@@ -715,7 +771,7 @@ Reply ONLY with a valid JSON ARRAY (keep "thought" under 5 words):
 
         optic_info = optic_info or {}
         combined_thought = " -> ".join([str(s.get("thought", "Action")) for s in skill_list if isinstance(s, dict)])
-        combined_speak = " ".join([str(s.get("speak", "")) for s in skill_list if isinstance(s, dict)]).strip() or "Right away, sir."
+        combined_speak = " ".join([str(s.get("speak", "")) for s in skill_list if isinstance(s, dict)]).strip()
 
         turn_nonce = int(time.time() * 1000) % 100000
         clean_payloads = []
@@ -751,10 +807,13 @@ Reply ONLY with a valid JSON ARRAY (keep "thought" under 5 words):
                 pushback_fn = getattr(skills, "get_pushback_context", None)
                 pushback_info = pushback_fn() if callable(pushback_fn) else ""
                 if pushback_info:
-                    combined_speak = f"{combined_speak} Though may I gently remind you, sir, of your {pushback_info}."
+                    combined_speak = f"{combined_speak} Though may I gently remind you, sir, of your {pushback_info}.".strip()
 
-            if skill_name == "respond" and not args.get("message"):
-                args["message"] = str(args.get("response") or args.get("answer") or args.get("text") or s.get("speak") or s.get("thought") or "Completed, sir.")
+            if skill_name == "respond":
+                if not args.get("message"):
+                    args["message"] = str(args.get("response") or args.get("answer") or args.get("text") or s.get("speak") or s.get("thought") or "Completed, sir.")
+                if not combined_speak:
+                    combined_speak = str(args["message"])
 
             if skill_name == "save_memory":
                 fact_val = args.get("fact") or args.get("text") or args.get("message")
@@ -790,7 +849,7 @@ Reply ONLY with a valid JSON ARRAY (keep "thought" under 5 words):
         )
 
     def _call_local_ollama(self, observation: ObservationPayload, history: List[str] | None = None, optic_info: dict | None = None) -> BrainDecision:
-        prompt = self._build_prompt(observation, history, optic_info)
+        prompt = self._build_prompt(observation, history, optic_info, include_web_snippets=True)
         is_ui_turn = bool(optic_info and optic_info.get("report_text"))
         payload = {
             "model": self.local_model,
@@ -823,13 +882,27 @@ Reply ONLY with a valid JSON ARRAY (keep "thought" under 5 words):
         if not self.gemini_api_key:
             raise RuntimeError(f"GEMINI_API_KEY missing in {ENV_PATH}")
 
-        prompt = self._build_prompt(observation, history, optic_info)
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
-        }
+        prompt = self._build_prompt(observation, history, optic_info, include_web_snippets=False)
+        gl = normalize_spoken_goal(str(observation.user_goal or "")).lower()
+        needs_live_web = any(w in gl for w in [
+            "aqi", "air quality", "weather", "temperature", "news", "score",
+            "price of", "stock", "latest", "current"
+        ])
+
+        if needs_live_web:
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "tools": [{"google_search": {}}],
+                "generationConfig": {"temperature": 0.0},
+            }
+        else:
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
+            }
+
         last_err = None
-        for model_name in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+        for model_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.gemini_api_key}"
             try:
                 t0 = time.time()
@@ -838,7 +911,12 @@ Reply ONLY with a valid JSON ARRAY (keep "thought" under 5 words):
                     last_err = f"{model_name} HTTP {res.status_code}: {res.text[:120]}"
                     continue
                 raw = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-                parsed = self._extract_json(raw)
+                try:
+                    parsed = self._extract_json(raw)
+                except ValueError:
+                    # If search-grounded Gemini answered in clean natural prose instead of JSON, wrap it cleanly!
+                    clean_prose = raw.strip()
+                    parsed = [{"thought": "Live web answer", "skill": "respond", "args": {"message": clean_prose}, "speak": clean_prose}]
                 elapsed = time.time() - t0
                 return self._package_skill_decision(parsed, f"CLOUD:{model_name} {elapsed:.1f}s", str(observation.user_goal or ""), optic_info)
             except Exception as e:
@@ -875,7 +953,7 @@ Reply ONLY with a valid JSON ARRAY (keep "thought" under 5 words):
                         "thought": f"Optic Nerve locked onto '{lbl}'.",
                         "skill": "click_element",
                         "args": {"target": lbl},
-                        "speak": f"Selecting {lbl}, sir."
+                        "speak": "Done."
                     }]
                     return self._package_skill_decision(direct_click, "OPTIC-DIRECT 0.5s", goal, optic_info)
 
